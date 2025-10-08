@@ -1,261 +1,89 @@
-import React, { useEffect, useMemo, useState, createContext, useContext } from 'react';
-import { SafeAreaView, View, Text, TextInput, TouchableOpacity, Switch, ActivityIndicator, Alert, Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
-import * as LocalAuthentication from 'expo-local-authentication';
-import axios from 'axios';
+// server.js
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
-// ---------- CONFIG ----------
-const API_URL = 'https://caribpay-backend-mini.onrender.com'; // your live backend
+dotenv.config();
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-const TOKEN_KEY = 'caribpay_token';
-const REMEMBER_KEY = 'caribpay_remember';
+// --- MongoDB Connection ---
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => console.log('✅ MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
 
-// Axios (60s for Render cold start)
-const api = axios.create({ baseURL: API_URL, timeout: 60000 });
-api.interceptors.response.use(
-  (r) => r,
-  (err) => {
-    if (err.response?.data?.message) err.message = err.response.data.message;
-    return Promise.reject(err);
+// --- User Schema ---
+const userSchema = new mongoose.Schema({
+  email: { type: String, unique: true, required: true },
+  password: { type: String, required: true }
+});
+const User = mongoose.model('User', userSchema);
+
+// --- Routes ---
+app.get('/', (_req, res) => res.send('CaribPay backend is running ✅'));
+
+// Register new user
+app.post('/auth/register', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ message: 'Email and password required' });
+
+    const existing = await User.findOne({ email });
+    if (existing)
+      return res.status(400).json({ message: 'Email already registered' });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const newUser = await User.create({ email, password: hashed });
+    const token = jwt.sign({ id: newUser._id, email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, user: { id: newUser._id, email } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error registering user' });
   }
-);
+});
 
-// ---------- AUTH CONTEXT ----------
-const AuthCtx = createContext(null);
-const useAuth = () => useContext(AuthCtx);
+// Login user
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user)
+      return res.status(400).json({ message: 'Invalid email or password' });
 
-function AuthProvider({ children }) {
-  const [token, setToken] = useState(null);
-  const [booting, setBooting] = useState(true);
+    const match = await bcrypt.compare(password, user.password);
+    if (!match)
+      return res.status(400).json({ message: 'Invalid email or password' });
 
-  const saveToken = (t) => SecureStore.setItemAsync(TOKEN_KEY, t);
-  const getToken = () => SecureStore.getItemAsync(TOKEN_KEY);
-  const clearToken = () => SecureStore.deleteItemAsync(TOKEN_KEY);
+    const token = jwt.sign({ id: user._id, email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, user: { id: user._id, email } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error logging in' });
+  }
+});
 
-  const setRemember = (v) => SecureStore.setItemAsync(REMEMBER_KEY, v ? '1' : '0');
-  const getRemember = async () => (await SecureStore.getItemAsync(REMEMBER_KEY)) === '1';
+// Verify token and get user
+app.get('/auth/me', async (req, res) => {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth) return res.status(401).json({ message: 'No token provided' });
+    const token = auth.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json({ id: user._id, email: user.email });
+  } catch (err) {
+    res.status(401).json({ message: 'Invalid or expired token' });
+  }
+});
 
-  const signIn = async (email, password, remember) => {
-    const { data } = await api.post('/auth/login', { email, password });
-    setToken(data.token);
-    await saveToken(data.token);
-    await setRemember(remember);
-  };
-
-  const register = async (email, password, remember) => {
-    const { data } = await api.post('/auth/register', { email, password });
-    setToken(data.token);
-    await saveToken(data.token);
-    await setRemember(remember);
-  };
-
-  const signOut = async () => {
-    setToken(null);
-    await clearToken();
-    await setRemember(false);
-  };
-
-  const tryAutoLogin = async () => {
-    const remember = await getRemember();
-    if (!remember) return false;
-
-    const hasHw = await LocalAuthentication.hasHardwareAsync();
-    const enrolled = await LocalAuthentication.isEnrolledAsync();
-    if (!hasHw || !enrolled) return false;
-
-    const res = await LocalAuthentication.authenticateAsync({ promptMessage: 'Unlock CaribPay' });
-    if (!res.success) return false;
-
-    const t = await getToken();
-    if (!t) return false;
-
-    setToken(t);
-    return true;
-  };
-
-  useEffect(() => {
-    (async () => {
-      try { await tryAutoLogin(); }
-      finally { setBooting(false); }
-    })();
-  }, []);
-
-  const value = useMemo(() => ({ token, signIn, register, signOut }), [token]);
-
-  if (booting) return <FullScreen><ActivityIndicator /></FullScreen>;
-  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
-}
-
-// ---------- UI HELPERS ----------
-function FullScreen({ children }) {
-  return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#0a1b1f' }}>
-      <View style={{ flex: 1, padding: 20, justifyContent: 'center' }}>{children}</View>
-    </SafeAreaView>
-  );
-}
-function Button({ title, onPress, disabled, style }) {
-  return (
-    <TouchableOpacity onPress={onPress} disabled={disabled}
-      style={[{ backgroundColor: disabled ? '#345' : '#0bb36b', padding: 16, borderRadius: 12, alignItems: 'center' }, style]}>
-      <Text style={{ color: 'white', fontWeight: '700' }}>{title}</Text>
-    </TouchableOpacity>
-  );
-}
-function Link({ title, onPress }) {
-  return (
-    <TouchableOpacity onPress={onPress} style={{ alignSelf: 'center', marginTop: 14 }}>
-      <Text style={{ color: '#9ecfd3', textDecorationLine: 'underline' }}>{title}</Text>
-    </TouchableOpacity>
-  );
-}
-function Input({ value, onChangeText, placeholder, secureTextEntry, keyboardType, autoCapitalize='none' }) {
-  return (
-    <View style={{ backgroundColor: '#13252b', borderRadius: 12, paddingHorizontal: 14, paddingVertical: Platform.OS === 'ios' ? 14 : 10, marginBottom: 12 }}>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor="#6f8a93"
-        secureTextEntry={secureTextEntry}
-        keyboardType={keyboardType}
-        autoCapitalize={autoCapitalize}
-        autoCorrect={false}
-        textContentType={secureTextEntry ? 'password' : 'emailAddress'}
-        style={{ color: 'white', fontSize: 16 }}
-      />
-    </View>
-  );
-}
-function LoadingOverlay({ text }) {
-  return (
-    <View style={{ position: 'absolute', left:0, right:0, top:0, bottom:0, justifyContent:'center', alignItems:'center' }}>
-      <ActivityIndicator />
-      <Text style={{ color: '#9ecfd3', marginTop: 10 }}>{text}</Text>
-    </View>
-  );
-}
-
-// Ping the root to wake Render if sleeping
-async function wakeServer() {
-  const res = await api.get('/');
-  return res.data;
-}
-
-// ---------- SCREENS ----------
-function LoginScreen({ goRegister }) {
-  const { signIn } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(true);
-  const [waking, setWaking] = useState(false);
-  const [loading, setLoading] = useState(false);
-
-  const onSubmit = async () => {
-    try { setWaking(true); await wakeServer(); } catch (e) {} finally { setWaking(false); }
-    try { setLoading(true); await signIn(email.trim(), password, remember); }
-    catch (e) { Alert.alert('Login failed', e.message || 'Please try again.'); }
-    finally { setLoading(false); }
-  };
-  const busy = waking || loading;
-
-  return (
-    <FullScreen>
-      <Text style={{ color: 'white', fontSize: 28, fontWeight: '800', marginBottom: 20 }}>CaribPay</Text>
-      <Input value={email} onChangeText={setEmail} placeholder="Email" keyboardType="email-address" />
-      <Input value={password} onChangeText={setPassword} placeholder="Password" secureTextEntry />
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
-        <Switch value={remember} onValueChange={setRemember} />
-        <Text style={{ color: 'white', marginLeft: 10 }}>Remember me / Face ID</Text>
-      </View>
-      <Button title={busy ? 'Signing in…' : 'Sign in'} onPress={onSubmit} disabled={busy || !email || !password} />
-      <Link title="Create an account" onPress={goRegister} />
-      {busy && <LoadingOverlay text={waking ? 'Waking server…' : 'Signing you in…'} />}
-    </FullScreen>
-  );
-}
-
-function RegisterScreen({ goLogin }) {
-  const { register } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [remember, setRemember] = useState(true);
-  const [waking, setWaking] = useState(false);
-  const [loading, setLoading] = useState(false);
-
-  const onSubmit = async () => {
-    if (password.length < 6) return Alert.alert('Weak password', 'Use at least 6 characters.');
-    if (password !== confirm) return Alert.alert('Passwords do not match', 'Please confirm your password.');
-    try { setWaking(true); await wakeServer(); } catch (e) {} finally { setWaking(false); }
-    try { setLoading(true); await register(email.trim(), password, remember); }
-    catch (e) { Alert.alert('Sign up failed', e.message || 'Please try again.'); }
-    finally { setLoading(false); }
-  };
-  const busy = waking || loading;
-
-  return (
-    <FullScreen>
-      <Text style={{ color: 'white', fontSize: 28, fontWeight: '800', marginBottom: 20 }}>Create Account</Text>
-      <Input value={email} onChangeText={setEmail} placeholder="Email" keyboardType="email-address" />
-      <Input value={password} onChangeText={setPassword} placeholder="Password (min 6)" secureTextEntry />
-      <Input value={confirm} onChangeText={setConfirm} placeholder="Confirm password" secureTextEntry />
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
-        <Switch value={remember} onValueChange={setRemember} />
-        <Text style={{ color: 'white', marginLeft: 10 }}>Remember me / Face ID</Text>
-      </View>
-      <Button title={busy ? 'Creating…' : 'Create account'} onPress={onSubmit} disabled={busy || !email || !password || !confirm} />
-      <Link title="Back to sign in" onPress={goLogin} />
-      {busy && <LoadingOverlay text={waking ? 'Waking server…' : 'Creating your account…'} />}
-    </FullScreen>
-  );
-}
-
-function HomeScreen() {
-  const { token, signOut } = useAuth();
-  const [me, setMe] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await api.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
-        setMe(data);
-      } catch (e) {
-        Alert.alert('Session', e.message || 'Could not load profile');
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [token]);
-
-  return (
-    <FullScreen>
-      {loading ? <ActivityIndicator /> : (
-        <>
-          <Text style={{ color: 'white', fontSize: 22, fontWeight: '700', marginBottom: 12 }}>Welcome</Text>
-          <Text style={{ color: '#9ecfd3', marginBottom: 20 }}>{me ? me.email : 'Unknown user'}</Text>
-          <Button title="Sign out" onPress={signOut} />
-        </>
-      )}
-    </FullScreen>
-  );
-}
-
-// ---------- ROOT ----------
-function InnerApp() {
-  const { token } = useAuth();
-  const [mode, setMode] = useState('login'); // 'login' | 'register'
-  if (token) return <HomeScreen />;
-  return mode === 'login'
-    ? <LoginScreen goRegister={() => setMode('register')} />
-    : <RegisterScreen goLogin={() => setMode('login')} />;
-}
-
-export default function App() {
-  return (
-    <AuthProvider>
-      <InnerApp />
-    </AuthProvider>
-  );
-}
+// --- Start Server ---
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
