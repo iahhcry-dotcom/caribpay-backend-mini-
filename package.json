@@ -1,22 +1,26 @@
-{
-  "name": "caribpay-backend-mini",
-  "version": "1.0.0",
-  "description": "CaribPay backend mini with server-side wallet and transactions API",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "jsonwebtoken": "^9.0.2",
-    "bcryptjs": "^2.4.3",
-    "uuid": "^9.0.1"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "author": "CaribPay Dev",
-  "license": "MIT"
-}
+// server.js
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+
+dotenv.config();
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// simple health check so Render knows we're alive
+app.get('/', (_req, res) => {
+  res.status(200).send('CaribPay backend running');
+});
+
+// example protected env usage (set these in Render → Environment)
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+
+// your routes would go here…
+
+// IMPORTANT: listen on Render's port and bind 0.0.0.0
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server listening on http://0.0.0.0:${PORT}`);
+});
