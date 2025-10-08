@@ -4,21 +4,23 @@ import * as SecureStore from 'expo-secure-store';
 import * as LocalAuthentication from 'expo-local-authentication';
 import axios from 'axios';
 
-// ✅ Your live backend
-const API_URL = 'https://caribpay-backend-mini.onrender.com';
+// ---------- CONFIG ----------
+const API_URL = 'https://caribpay-backend-mini.onrender.com'; // your live backend
 
-// Secure storage keys
 const TOKEN_KEY = 'caribpay_token';
 const REMEMBER_KEY = 'caribpay_remember';
 
 // Axios (60s for Render cold start)
 const api = axios.create({ baseURL: API_URL, timeout: 60000 });
-api.interceptors.response.use(r => r, err => {
-  if (err.response?.data?.message) err.message = err.response.data.message;
-  return Promise.reject(err);
-});
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err.response?.data?.message) err.message = err.response.data.message;
+    return Promise.reject(err);
+  }
+);
 
-// ---------- Auth context ----------
+// ---------- AUTH CONTEXT ----------
 const AuthCtx = createContext(null);
 const useAuth = () => useContext(AuthCtx);
 
@@ -29,6 +31,7 @@ function AuthProvider({ children }) {
   const saveToken = (t) => SecureStore.setItemAsync(TOKEN_KEY, t);
   const getToken = () => SecureStore.getItemAsync(TOKEN_KEY);
   const clearToken = () => SecureStore.deleteItemAsync(TOKEN_KEY);
+
   const setRemember = (v) => SecureStore.setItemAsync(REMEMBER_KEY, v ? '1' : '0');
   const getRemember = async () => (await SecureStore.getItemAsync(REMEMBER_KEY)) === '1';
 
@@ -39,7 +42,6 @@ function AuthProvider({ children }) {
     await setRemember(remember);
   };
 
-  // NEW: sign up then set token
   const register = async (email, password, remember) => {
     const { data } = await api.post('/auth/register', { email, password });
     setToken(data.token);
@@ -56,25 +58,35 @@ function AuthProvider({ children }) {
   const tryAutoLogin = async () => {
     const remember = await getRemember();
     if (!remember) return false;
+
     const hasHw = await LocalAuthentication.hasHardwareAsync();
     const enrolled = await LocalAuthentication.isEnrolledAsync();
     if (!hasHw || !enrolled) return false;
+
     const res = await LocalAuthentication.authenticateAsync({ promptMessage: 'Unlock CaribPay' });
     if (!res.success) return false;
+
     const t = await getToken();
     if (!t) return false;
+
     setToken(t);
     return true;
   };
 
-  useEffect(() => { (async () => { try { await tryAutoLogin(); } finally { setBooting(false); } })(); }, []);
+  useEffect(() => {
+    (async () => {
+      try { await tryAutoLogin(); }
+      finally { setBooting(false); }
+    })();
+  }, []);
 
   const value = useMemo(() => ({ token, signIn, register, signOut }), [token]);
+
   if (booting) return <FullScreen><ActivityIndicator /></FullScreen>;
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
 
-// ---------- UI helpers ----------
+// ---------- UI HELPERS ----------
 function FullScreen({ children }) {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#0a1b1f' }}>
@@ -115,11 +127,22 @@ function Input({ value, onChangeText, placeholder, secureTextEntry, keyboardType
     </View>
   );
 }
+function LoadingOverlay({ text }) {
+  return (
+    <View style={{ position: 'absolute', left:0, right:0, top:0, bottom:0, justifyContent:'center', alignItems:'center' }}>
+      <ActivityIndicator />
+      <Text style={{ color: '#9ecfd3', marginTop: 10 }}>{text}</Text>
+    </View>
+  );
+}
 
-// Wake the server (free Render may sleep)
-async function wakeServer() { return (await api.get('/')).data; }
+// Ping the root to wake Render if sleeping
+async function wakeServer() {
+  const res = await api.get('/');
+  return res.data;
+}
 
-// ---------- Screens ----------
+// ---------- SCREENS ----------
 function LoginScreen({ goRegister }) {
   const { signIn } = useAuth();
   const [email, setEmail] = useState('');
@@ -129,7 +152,7 @@ function LoginScreen({ goRegister }) {
   const [loading, setLoading] = useState(false);
 
   const onSubmit = async () => {
-    try { setWaking(true); await wakeServer(); } catch {} finally { setWaking(false); }
+    try { setWaking(true); await wakeServer(); } catch (e) {} finally { setWaking(false); }
     try { setLoading(true); await signIn(email.trim(), password, remember); }
     catch (e) { Alert.alert('Login failed', e.message || 'Please try again.'); }
     finally { setLoading(false); }
@@ -164,7 +187,7 @@ function RegisterScreen({ goLogin }) {
   const onSubmit = async () => {
     if (password.length < 6) return Alert.alert('Weak password', 'Use at least 6 characters.');
     if (password !== confirm) return Alert.alert('Passwords do not match', 'Please confirm your password.');
-    try { setWaking(true); await wakeServer(); } catch {} finally { setWaking(false); }
+    try { setWaking(true); await wakeServer(); } catch (e) {} finally { setWaking(false); }
     try { setLoading(true); await register(email.trim(), password, remember); }
     catch (e) { Alert.alert('Sign up failed', e.message || 'Please try again.'); }
     finally { setLoading(false); }
@@ -188,28 +211,23 @@ function RegisterScreen({ goLogin }) {
   );
 }
 
-function LoadingOverlay({ text }) {
-  return (
-    <View style={{ position: 'absolute', left:0, right:0, top:0, bottom:0, justifyContent:'center', alignItems:'center' }}>
-      <ActivityIndicator />
-      <Text style={{ color: '#9ecfd3', marginTop: 10 }}>{text}</Text>
-    </View>
-  );
-}
-
 function HomeScreen() {
   const { token, signOut } = useAuth();
   const [me, setMe] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => { (async () => {
-    try {
-      const { data } = await api.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
-      setMe(data);
-    } catch (e) {
-      Alert.alert('Session', e.message || 'Could not load profile');
-    } finally { setLoading(false); }
-  })(); }, [token]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+        setMe(data);
+      } catch (e) {
+        Alert.alert('Session', e.message || 'Could not load profile');
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [token]);
 
   return (
     <FullScreen>
@@ -224,10 +242,10 @@ function HomeScreen() {
   );
 }
 
-// ---------- Root ----------
+// ---------- ROOT ----------
 function InnerApp() {
   const { token } = useAuth();
-  const [mode, setMode] = useState<'login' | 'register'>('login'); // simple switch, no nav lib
+  const [mode, setMode] = useState('login'); // 'login' | 'register'
   if (token) return <HomeScreen />;
   return mode === 'login'
     ? <LoginScreen goRegister={() => setMode('register')} />
