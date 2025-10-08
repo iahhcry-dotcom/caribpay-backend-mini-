@@ -4,8 +4,9 @@
   "description": "CaribPay backend mini web app",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
-  "dependencies": {
-    "mongoose": "^8.5.0"
+  "dependencies": 
+    "mongoose": "^8.5.0" 
+  {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
