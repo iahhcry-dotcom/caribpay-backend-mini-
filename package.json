@@ -1,26 +1,7 @@
 {
-  "expo": {
-    "name": "CaribPay",
-    "slug": "caribpay",
-    "scheme": "caribpay",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "cover",
-      "backgroundColor": "#070B0C"
-    },
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.yourname.caribpay"
-    },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#070B0C"
-      },
-      "package": "com.yourname.caribpay"
-    },
-    "plugins": ["expo-secure-store", "expo-local-authentication"]
+  "dependencies": {
+    "axios": "^1.6.7",
+    "expo-local-authentication": "~13.7.1",
+    "expo-secure-store": "~12.8.1"
   }
 }
