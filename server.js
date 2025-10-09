@@ -1,144 +1,139 @@
-// server.js
+// server.js  — CaribPay mini backend (auth + transactions + send money)
 import express from "express";
-import mongoose from "mongoose";
 import cors from "cors";
+import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
-
-dotenv.config();
 
 const app = express();
-app.use(express.json());
 app.use(cors());
+app.use(express.json());
 
-// === CONFIG ===
+// ---- ENV ----
 const PORT = process.env.PORT || 10000;
-const MONGO_URI =
-  process.env.MONGO_URI ||
-  "mongodb+srv://caribpay:caribpay123@cluster0.mongodb.net/caribpay";
-const JWT_SECRET = process.env.JWT_SECRET || "supersecretjwtkey";
+const MONGO_URI = process.env.MONGO_URI;         // set on Render
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
-// === CONNECT DATABASE ===
+// ---- DB ----
 mongoose
-  .connect(MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => console.error("MongoDB connection error:", err));
+  .connect(MONGO_URI, { dbName: "caribpay" })
+  .then(() => console.log("MongoDB connected"))
+  .catch((e) => {
+    console.error("Mongo error", e.message);
+    process.exit(1);
+  });
 
-// === USER MODEL ===
+// ---- MODELS ----
 const UserSchema = new mongoose.Schema(
-  {
-    email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
-  },
+  { email: { type: String, unique: true, index: true }, password: String },
   { timestamps: true }
 );
 const User = mongoose.model("User", UserSchema);
 
-// === TRANSACTION MODEL ===
 const TransactionSchema = new mongoose.Schema(
   {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
     type: { type: String, enum: ["send", "receive"], required: true },
     amount: { type: Number, required: true },
-    currency: { type: String, default: "USD" },
-    to: String,
-    from: String,
+    from: { type: String, required: true },
+    to: { type: String, required: true },
     note: String,
   },
   { timestamps: true }
 );
 const Transaction = mongoose.model("Transaction", TransactionSchema);
 
-// === AUTH MIDDLEWARE ===
+// ---- AUTH HELPERS ----
+function signToken(user) {
+  return jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, {
+    expiresIn: "7d",
+  });
+}
 function auth(req, res, next) {
-  const h = req.headers.authorization || "";
-  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
-  if (!token) return res.status(401).json({ error: "Missing token" });
   try {
+    const h = req.headers.authorization || "";
+    const token = h.startsWith("Bearer ") ? h.slice(7) : "";
+    if (!token) return res.status(401).json({ message: "Missing token" });
     const payload = jwt.verify(token, JWT_SECRET);
-    req.userId = payload.id;
+    req.user = { id: payload.id, email: payload.email };
     next();
-  } catch (e) {
-    return res.status(401).json({ error: "Invalid token" });
+  } catch {
+    return res.status(401).json({ message: "Invalid token" });
   }
 }
 
-// === AUTH ROUTES ===
+// ---- ROUTES ----
+app.get("/", (_req, res) => res.json({ ok: true, name: "CaribPay API" }));
 
-// REGISTER
+// Register
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password)
-      return res.status(400).json({ error: "Missing fields" });
-
-    const existing = await User.findOne({ email });
-    if (existing)
-      return res.status(400).json({ error: "User already exists" });
-
-    const hashed = await bcrypt.hash(password, 10);
-    const user = await User.create({ email, password: hashed });
-    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
-
-    res.json({ token, user: { email: user.email } });
-  } catch (err) {
-    console.error("Register error:", err);
-    res.status(500).json({ error: "Server error" });
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ message: "Email and password required" });
+    const exists = await User.findOne({ email });
+    if (exists) return res.status(409).json({ message: "User already exists" });
+    const hash = await bcrypt.hash(password, 10);
+    const user = await User.create({ email, password: hash });
+    const token = signToken(user);
+    return res.json({ token, email: user.email });
+  } catch (e) {
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-// LOGIN
+// Login
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ error: "Invalid credentials" });
-
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(400).json({ error: "Invalid credentials" });
-
-    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
-    res.json({ token, user: { email: user.email } });
-  } catch (err) {
-    console.error("Login error:", err);
-    res.status(500).json({ error: "Server error" });
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+    const token = signToken(user);
+    return res.json({ token, email: user.email });
+  } catch {
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-// === TRANSACTION ROUTES ===
-
-// Seed sample transactions (for test/demo)
-app.post("/api/transactions/seed", auth, async (req, res) => {
-  const userId = req.userId;
-  const seed = [
-    { userId, type: "send", amount: 25.5, to: "Cafe" },
-    { userId, type: "receive", amount: 120, from: "A. Roberts" },
-    { userId, type: "send", amount: 8.99, to: "Transit Top-up" },
-  ];
-  await Transaction.deleteMany({ userId });
-  await Transaction.insertMany(seed);
-  res.json({ ok: true, count: seed.length });
-});
-
-// Get recent transactions (JWT protected)
+// List transactions for current user (sent OR received)
 app.get("/api/transactions", auth, async (req, res) => {
   try {
-    const list = await Transaction.find({ userId: req.userId })
+    const email = req.user.email;
+    const items = await Transaction.find({
+      $or: [{ from: email }, { to: email }],
+    })
       .sort({ createdAt: -1 })
-      .limit(20)
+      .limit(50)
       .lean();
-    res.json({ items: list });
-  } catch (err) {
-    console.error("Transactions fetch error:", err);
-    res.status(500).json({ error: "Failed to load transactions" });
+    return res.json({ items });
+  } catch {
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-// === SERVER START ===
-app.listen(PORT, () => {
-  console.log(`🚀 CaribPay backend running on port ${PORT}`);
+// NEW: Send money
+app.post("/api/transactions/send", auth, async (req, res) => {
+  try {
+    let { to, amount, note } = req.body || {};
+    if (!to || !amount) return res.status(400).json({ message: "Recipient and amount required" });
+
+    amount = Number(amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ message: "Amount must be a positive number" });
+    }
+
+    const tx = await Transaction.create({
+      type: "send",
+      from: req.user.email,
+      to,
+      amount,
+      note: note || "",
+    });
+
+    return res.status(201).json({ ok: true, item: tx });
+  } catch (e) {
+    return res.status(500).json({ message: "Server error" });
+  }
 });
+
+app.listen(PORT, () => console.log(`CaribPay backend running on port ${PORT}`));
