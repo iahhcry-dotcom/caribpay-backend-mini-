@@ -1,128 +1,107 @@
-// server.js — CaribPay backend (MongoDB + Auth)
-const express = require('express');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const mongoose = require('mongoose');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+// server.js
+import express from 'express';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 dotenv.config();
 
 const app = express();
-
-/* ------------ Middleware ------------ */
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }));
 app.use(express.json());
+app.use(cors());
 
-/* ------------ Config ------------ */
-const PORT = process.env.PORT || 10000;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+// --- MongoDB Connection ---
 const MONGO_URI = process.env.MONGO_URI;
-
-/* ------------ MongoDB ------------ */
-if (!MONGO_URI) {
-  console.error('❌ Missing MONGO_URI env var. Set it in Render.');
-}
-
-mongoose
-  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('✅ MongoDB connected'))
-  .catch((err) => console.error('❌ MongoDB connection error:', err.message));
+  .catch(err => console.error('❌ MongoDB connection error:', err.message));
 
-/* ------------ Models ------------ */
-const userSchema = new mongoose.Schema(
-  {
-    email: { type: String, required: true, unique: true, index: true },
-    passwordHash: { type: String, required: true },
-  },
-  { timestamps: true }
-);
+// --- User Schema ---
+const userSchema = new mongoose.Schema({
+  email: { type: String, unique: true, required: true },
+  password: { type: String, required: true }
+});
 
 const User = mongoose.model('User', userSchema);
 
-/* ------------ Helpers ------------ */
-function isValidEmail(s) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '').toLowerCase());
-}
-function isValidPassword(s) {
-  return typeof s === 'string' && s.length >= 6;
-}
-function issueToken(user) {
-  return jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-}
-function requireAuth(req, res, next) {
-  const auth = req.headers.authorization || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  if (!token) return res.status(401).json({ message: 'Missing token' });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch {
-    return res.status(401).json({ message: 'Invalid or expired token' });
-  }
-}
+// --- JWT Helpers ---
+const JWT_SECRET = process.env.JWT_SECRET || 'mySuperSecretKey';
 
-/* ------------ Routes ------------ */
-
-// Health checks (Render can hit these)
-app.get('/', (_req, res) => res.status(200).send('CaribPay backend is running ✅'));
-app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+// --- Routes ---
+app.get('/', (req, res) => {
+  res.send('🌴 CaribPay Backend is running...');
+});
 
 // Register new user
 app.post('/auth/register', async (req, res) => {
   try {
-    let { email, password } = req.body || {};
-    email = (email || '').trim().toLowerCase();
+    const { email, password } = req.body;
 
-    if (!isValidEmail(email)) return res.status(400).json({ message: 'Invalid email address' });
-    if (!isValidPassword(password)) return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    if (!email || !password)
+      return res.status(400).json({ message: 'Email and password are required.' });
 
-    const exists = await User.findOne({ email });
-    if (exists) return res.status(409).json({ message: 'Email already registered' });
+    const existingUser = await User.findOne({ email });
+    if (existingUser)
+      return res.status(400).json({ message: 'User already exists.' });
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({ email, passwordHash });
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = new User({ email, password: hashedPassword });
+    await newUser.save();
 
-    const token = issueToken(user);
-    return res.status(201).json({ token, user: { id: user._id, email: user.email } });
-  } catch (e) {
-    console.error('Register error:', e);
-    return res.status(500).json({ message: 'Server error' });
+    const token = jwt.sign({ id: newUser._id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.status(201).json({ token, user: { id: newUser._id, email: newUser.email } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
-// Login user
+// Login existing user
 app.post('/auth/login', async (req, res) => {
   try {
-    let { email, password } = req.body || {};
-    email = (email || '').trim().toLowerCase();
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ message: 'Email and password are required.' });
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!user)
+      return res.status(400).json({ message: 'Invalid credentials.' });
 
-    const ok = await bcrypt.compare(password || '', user.passwordHash);
-    if (!ok) return res.status(401).json({ message: 'Invalid credentials' });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch)
+      return res.status(400).json({ message: 'Invalid credentials.' });
 
-    const token = issueToken(user);
-    return res.json({ token, user: { id: user._id, email: user.email } });
-  } catch (e) {
-    console.error('Login error:', e);
-    return res.status(500).json({ message: 'Server error' });
+    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.json({ token, user: { id: user._id, email: user.email } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error.' });
   }
 });
 
-// Get current user (requires token)
-app.get('/auth/me', requireAuth, async (req, res) => {
+// Protected route to get user info
+app.get('/auth/me', async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('_id email');
-    if (!user) return res.status(404).json({ message: 'User not found' });
-    return res.json({ id: user._id, email: user.email });
-  } catch (e) {
-    return res.status(500).json({ message: 'Server error' });
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ message: 'Missing token.' });
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const user = await User.findById(decoded.id).select('-password');
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+
+    res.json(user);
+  } catch (err) {
+    console.error(err);
+    res.status(401).json({ message: 'Invalid or expired token.' });
   }
 });
 
-/* ------------ Start server (Render needs 0.0.0.0 + dynamic PORT) ------------ */
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ CaribPay backend running on port ${PORT}`);
-});
+// --- Start Server ---
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`✅ CaribPay backend running on port ${PORT}`));
