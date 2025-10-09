@@ -1,18 +1,25 @@
 {
-  "name": "caribpay-backend-mini",
-  "version": "1.0.0",
-  "description": "CaribPay backend server",
-  "main": "server.js",
-  "type": "module",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.5.0"
+  "expo": {
+    "name": "CaribPay",
+    "slug": "caribpay-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "https://files.oaiusercontent.com/file-000000008270622f8fd391bf8ba75714-A_logo_for_CaribPay_is_displayed_in_a_digital_vect.png",
+    "splash": {
+      "image": "https://files.oaiusercontent.com/file-0000000035a861f58a82adf36b8cbb5a-A_logo_for_CaribPay_is_centered_on_a_solid_black.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.caribpay.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "https://files.oaiusercontent.com/file-000000008270622f8fd391bf8ba75714-A_logo_for_CaribPay_is_displayed_in_a_digital_vect.png",
+        "backgroundColor": "#000000"
+      }
+    }
   }
 }
