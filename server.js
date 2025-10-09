@@ -1,251 +1,96 @@
-import React, { useEffect, useState } from 'react';
-import {
-  SafeAreaView,
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  Switch,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
-import * as SecureStore from 'expo-secure-store';
-import * as LocalAuthentication from 'expo-local-authentication';
-import axios from 'axios';
+// server.js — CaribPay backend (no JSX)
+// Run with: node server.js
 
-/* ======== CONFIG ======== */
-const API_URL = 'https://caribpay-backend-mini.onrender.com'; // your live backend
-const TOKEN_KEY = 'caribpay_token';
-const REMEMBER_KEY = 'caribpay_remember';
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 
-const COLORS = {
-  bg: '#0A0F10',
-  text: '#FFFFFF',
-  sub: '#9ecfd3',
-  green: '#009E49',
-  yellow: '#FCD116',
-  red: '#CE1126',
-  inputBg: '#13252b',
-  disabled: '#334455',
-};
+dotenv.config();
 
-/* ======== UI HELPERS ======== */
-function Bar() {
-  return (
-    <View>
-      <View style={{ height: 5, backgroundColor: COLORS.red }} />
-      <View style={{ height: 5, backgroundColor: COLORS.yellow }} />
-      <View style={{ height: 5, backgroundColor: COLORS.green }} />
-    </View>
-  );
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// ===== Env & constants
+const PORT = process.env.PORT || 10000;
+const MONGO_URI = process.env.MONGO_URI;
+const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
+
+if (!MONGO_URI) {
+  console.error('❌ Missing MONGO_URI env var');
+  process.exit(1);
 }
 
-function Field({ placeholder, value, onChangeText, secure }) {
-  return (
-    <TextInput
-      placeholder={placeholder}
-      placeholderTextColor={COLORS.sub}
-      value={value}
-      onChangeText={onChangeText}
-      secureTextEntry={secure}
-      autoCapitalize="none"
-      style={{
-        backgroundColor: COLORS.inputBg,
-        color: COLORS.text,
-        borderRadius: 10,
-        padding: 14,
-        marginBottom: 12,
-        fontSize: 16,
-      }}
-    />
-  );
+// ===== Mongo connection
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log('✅ MongoDB connected'))
+  .catch((err) => {
+    console.error('❌ MongoDB connection error:', err.message);
+    process.exit(1);
+  });
+
+// ===== User model
+const userSchema = new mongoose.Schema(
+  {
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    passwordHash: { type: String, required: true }
+  },
+  { timestamps: true }
+);
+const User = mongoose.model('User', userSchema);
+
+// ===== Helpers
+function signToken(userId) {
+  return jwt.sign({ uid: userId }, JWT_SECRET, { expiresIn: '7d' });
 }
 
-function Btn({ title, onPress, disabled, color }) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      disabled={disabled}
-      style={{
-        backgroundColor: disabled ? COLORS.disabled : (color || COLORS.yellow),
-        borderRadius: 10,
-        paddingVertical: 14,
-        alignItems: 'center',
-        marginTop: 8,
-      }}
-    >
-      <Text style={{ color: disabled ? '#ced6db' : COLORS.bg, fontWeight: '800', fontSize: 16 }}>
-        {title}
-      </Text>
-    </TouchableOpacity>
-  );
-}
+// ===== Health routes
+app.get('/', (_req, res) => res.status(200).send('CaribPay backend is live'));
+app.get('/api/auth/test', (_req, res) => res.json({ ok: true, service: 'caribpay-backend' }));
 
-/* ======== APP ======== */
-function App() {
-  const [mode, setMode] = useState('login'); // 'login' | 'register'
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [remember, setRemember] = useState(true);
-  const [busy, setBusy] = useState(false);
+// ===== Auth routes
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-  const [token, setToken] = useState(null);
-  const [signedEmail, setSignedEmail] = useState(null);
+    const exists = await User.findOne({ email });
+    if (exists) return res.status(409).json({ error: 'User already exists' });
 
-  const [health, setHealth] = useState<'ok' | 'down' | 'checking'>('checking');
-
-  // --- Health check on boot
-  useEffect(() => {
-    (async () => {
-      try {
-        // You can add this route in your server to return {ok:true}; if missing, fall back to '/'
-        const res = await fetch(`${API_URL}/api/auth/test`).catch(() => null);
-        if (res && res.ok) setHealth('ok');
-        else {
-          const ping = await fetch(`${API_URL}/`).catch(() => null);
-          setHealth(ping && ping.ok ? 'ok' : 'down');
-        }
-      } catch {
-        setHealth('down');
-      }
-    })();
-  }, []);
-
-  // --- Restore session / Face ID
-  useEffect(() => {
-    (async () => {
-      const savedToken = await SecureStore.getItemAsync(TOKEN_KEY);
-      const savedRemember = await SecureStore.getItemAsync(REMEMBER_KEY);
-      if (savedRemember) {
-        const data = JSON.parse(savedRemember);
-        setEmail(data.email || '');
-        setPassword(data.password || '');
-        setRemember(true);
-
-        const hasHw = await LocalAuthentication.hasHardwareAsync();
-        const enrolled = await LocalAuthentication.isEnrolledAsync();
-        if (hasHw && enrolled) {
-          const res = await LocalAuthentication.authenticateAsync({ promptMessage: 'Unlock CaribPay' });
-          if (res.success && savedToken) {
-            setToken(savedToken);
-            setSignedEmail(data.email || '');
-          }
-        }
-      } else if (savedToken) {
-        setToken(savedToken);
-        setSignedEmail('user');
-      }
-    })();
-  }, []);
-
-  function showServerError(err, fallback) {
-    const msg =
-      err?.response?.data?.error ||
-      err?.message ||
-      fallback ||
-      'Server error';
-    Alert.alert(mode === 'login' ? 'Login failed' : 'Sign up failed', msg);
+    const passwordHash = await bcrypt.hash(password, 10);
+    const newUser = await User.create({ email, passwordHash });
+    const token = signToken(newUser._id);
+    return res.json({ token });
+  } catch (err) {
+    console.error('Register error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
+});
 
-  async function auth(endpoint) {
-    if (!email || !password) return Alert.alert('Missing info', 'Please enter email and password.');
-    setBusy(true);
-    try {
-      const { data } = await axios.post(`${API_URL}${endpoint}`, { email, password });
-      if (!data?.token) throw new Error('No token returned');
-      await SecureStore.setItemAsync(TOKEN_KEY, data.token);
-      if (remember) await SecureStore.setItemAsync(REMEMBER_KEY, JSON.stringify({ email, password }));
-      setToken(data.token);
-      setSignedEmail(email);
-    } catch (err) {
-      showServerError(err);
-    } finally {
-      setBusy(false);
-    }
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const valid = await bcrypt.compare(password, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: 'Invalid password' });
+
+    const token = signToken(user._id);
+    return res.json({ token });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
+});
 
-  async function signOut() {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
-    setToken(null);
-    setSignedEmail(null);
-    if (!remember) {
-      await SecureStore.deleteItemAsync(REMEMBER_KEY);
-      setEmail('');
-      setPassword('');
-    }
-  }
-
-  // ---------- Screens ----------
-  if (busy) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color={COLORS.green} />
-        <Text style={{ color: COLORS.text, marginTop: 10 }}>Loading…</Text>
-      </SafeAreaView>
-    );
-  }
-
-  if (token) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
-        <Bar />
-        <View style={{ flex: 1, padding: 20, justifyContent: 'center' }}>
-          <Text style={{ color: COLORS.text, fontSize: 28, fontWeight: '900', marginBottom: 10 }}>
-            Welcome 🇬🇩
-          </Text>
-          <View style={{ backgroundColor: '#102027', padding: 16, borderRadius: 12, marginBottom: 16 }}>
-            <Text style={{ color: COLORS.sub, marginBottom: 6 }}>Signed in as</Text>
-            <Text style={{ color: COLORS.text, fontWeight: '700' }}>{signedEmail}</Text>
-          </View>
-          <Btn title="Sign out" onPress={signOut} color={COLORS.red} />
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }}>
-      <Bar />
-      {health === 'down' && (
-        <View style={{ backgroundColor: '#8b1b1b', padding: 10 }}>
-          <Text style={{ color: '#fff', textAlign: 'center' }}>
-            Server offline — open the app again in 30–60s or redeploy on Render
-          </Text>
-        </View>
-      )}
-
-      <View style={{ flex: 1, padding: 20, justifyContent: 'center' }}>
-        <Text style={{ color: COLORS.text, fontSize: 30, fontWeight: '900', marginBottom: 16 }}>CaribPay</Text>
-
-        <Field placeholder="Email" value={email} onChangeText={setEmail} />
-        <Field placeholder="Password" value={password} onChangeText={setPassword} secure />
-
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginVertical: 8 }}>
-          <Switch value={remember} onValueChange={setRemember} />
-          <Text style={{ color: COLORS.text, marginLeft: 8 }}>Remember me / Face ID</Text>
-        </View>
-
-        <Btn
-          title={mode === 'login' ? 'Sign in' : 'Create account'}
-          onPress={() => auth(mode === 'login' ? '/api/auth/login' : '/api/auth/register')}
-          disabled={!email || !password || health === 'down'}
-        />
-
-        <TouchableOpacity onPress={() => setMode(mode === 'login' ? 'register' : 'login')}>
-          <Text
-            style={{
-              color: COLORS.sub,
-              textAlign: 'center',
-              marginTop: 14,
-              textDecorationLine: 'underline',
-            }}
-          >
-            {mode === 'login' ? 'Create an account' : 'Back to sign in'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-    </SafeAreaView>
-  );
-}
-
-export default App;
+// ===== Start server
+app.listen(PORT, () => {
+  console.log(`✅ CaribPay backend running on port ${PORT}`);
+});
