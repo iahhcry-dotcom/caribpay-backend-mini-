@@ -1,22 +1,26 @@
 {
-  "name": "caribpay-backend-mini",
-  "version": "1.0.0",
-  "description": "CaribPay backend mini",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.18.2",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.5.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "author": "CaribPay Dev",
-  "license": "MIT"
+  "expo": {
+    "name": "CaribPay",
+    "slug": "caribpay",
+    "scheme": "caribpay",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#070B0C"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourname.caribpay"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#070B0C"
+      },
+      "package": "com.yourname.caribpay"
+    },
+    "plugins": ["expo-secure-store", "expo-local-authentication"]
+  }
 }
