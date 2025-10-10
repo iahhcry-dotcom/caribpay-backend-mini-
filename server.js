@@ -1,293 +1,241 @@
-// server.js – CaribPay backend (secure)
-// Features: Email validation, rate limiting, password reset via email
+// server.js — CaribPay minimal backend (Express + MongoDB + JWT)
+// Install: npm i express cors mongoose bcryptjs jsonwebtoken nodemailer
 
-require('dotenv').config();
+// ====== Imports ======
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
+const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const rateLimit = require('express-rate-limit');
 const nodemailer = require('nodemailer');
-const crypto = require('crypto');
 
+// ====== Config / Env ======
+const {
+  MONGO_URI,
+  JWT_SECRET,
+  NODE_ENV = 'Production',
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_USER,
+  SMTP_PASS,
+  MAIL_FROM = 'CaribPay <no-reply@caribpay.com>',
+  FRONTEND_RESET_URL = 'https://snack.expo.dev', // where your reset link points to
+} = process.env;
+
+if (!MONGO_URI) {
+  console.error('❌ Missing MONGO_URI env var');
+  process.exit(1);
+}
+if (!JWT_SECRET) {
+  console.error('❌ Missing JWT_SECRET env var');
+  process.exit(1);
+}
+
+const PORT = process.env.PORT || 10000;
+
+// ====== App ======
 const app = express();
 
-// ====== CONFIG ======
-const PORT = process.env.PORT || 10000;
-const MONGO_URI = process.env.MONGO_URI;
-const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
-const APP_NAME = 'CaribPay';
-const CLIENT_ORIGINS = [
-  'https://snack.expo.dev',
-  'https://*.snack.expo.dev',
-  'https://expo.dev',
-  'http://localhost:19006',
-  'http://localhost:19000',
-  'http://localhost:8081',
-  'http://localhost:3000',
-];
-
-// Email sender (Nodemailer) – use any SMTP provider
-// Required envs: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: false, // true for 465; false for 587/STARTTLS
-  auth: process.env.SMTP_USER
-    ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-    : undefined,
-});
-
-// ====== SECURITY / MIDDLEWARE ======
-app.set('trust proxy', 1);
-app.use(helmet());
-app.use(express.json());
-
+// CORS: allow Snack + everything (safe for this mini demo)
 app.use(
   cors({
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (CLIENT_ORIGINS.some((o) => origin.startsWith(o.replace('*.', '')))) return cb(null, true);
-      if (/\.onrender\.com$/.test(new URL(origin).hostname)) return cb(null, true);
-      return cb(null, true); // be permissive for mobile debug
-    },
+    origin: true, // reflect request origin
     credentials: false,
   })
 );
-
-app.use(morgan('tiny'));
-
-// Global rate limit: 100 req / 15 min per IP
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api', apiLimiter);
-
-// Tighter limit for auth endpoints: 10 req / 10 min per IP
-const authLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many attempts. Please wait and try again.' },
-});
-app.use('/api/auth', authLimiter);
+app.use(express.json());
 
 // ====== DB ======
 mongoose
   .connect(MONGO_URI, { dbName: 'caribpay' })
-  .then(() => console.log('MongoDB connected'))
+  .then(() => console.log('✅ MongoDB connected'))
   .catch((err) => {
-    console.error('MongoDB connection error:', err.message);
+    console.error('❌ MongoDB connection error:', err.message);
     process.exit(1);
   });
 
-// ====== MODELS ======
+// ====== Models ======
 const userSchema = new mongoose.Schema(
   {
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    passwordHash: { type: String, required: true },
-    // password reset
-    resetTokenHash: String,
-    resetTokenExp: Date,
-    createdAt: { type: Date, default: Date.now },
+    email: { type: String, unique: true, required: true, index: true },
+    password: { type: String, required: true }, // hashed
+    name: { type: String },
   },
-  { collection: 'users' }
+  { timestamps: true }
 );
 
 const User = mongoose.model('User', userSchema);
 
-// ====== HELPERS ======
-const EMAIL_RE =
-  /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
-
-function validEmail(email) {
-  return EMAIL_RE.test(String(email || '').trim());
-}
-
-function strongEnough(pw) {
-  // at least 6 chars; recommend 1 letter + 1 digit
-  return typeof pw === 'string' && pw.length >= 6;
-}
-
+// ====== Helpers ======
 function signToken(user) {
-  return jwt.sign({ uid: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign(
+    { sub: user._id.toString(), email: user.email },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
 }
 
-function auth(req, res, next) {
+function authMiddleware(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'Missing token' });
+  if (!token) return res.status(401).json({ message: 'Missing token' });
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
     next();
   } catch {
-    return res.status(401).json({ error: 'Invalid token' });
+    return res.status(401).json({ message: 'Invalid token' });
   }
 }
 
-async function sendMail(to, subject, html) {
-  if (!process.env.SMTP_HOST) {
-    console.warn('SMTP not configured; skipping email send.');
+async function sendResetEmail(toEmail, token) {
+  if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS) {
+    console.log('ℹ️  SMTP not configured; skipping email send.');
     return;
   }
-  const from = process.env.MAIL_FROM || `${APP_NAME} <no-reply@caribpay.local>`;
-  await transporter.sendMail({ from, to, subject, html });
+
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    secure: Number(SMTP_PORT) === 465, // true for 465, false otherwise
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+  });
+
+  const resetLink = `${FRONTEND_RESET_URL}/reset?token=${encodeURIComponent(
+    token
+  )}`;
+
+  await transporter.sendMail({
+    from: MAIL_FROM,
+    to: toEmail,
+    subject: 'CaribPay password reset',
+    html: `
+      <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif">
+        <h2>Reset your CaribPay password</h2>
+        <p>Click the button below to set a new password. This link expires in 30 minutes.</p>
+        <p><a href="${resetLink}" 
+              style="background:#111;color:#fff;padding:12px 16px;border-radius:8px;
+                     text-decoration:none;display:inline-block">Reset Password</a></p>
+        <p>If the button doesn’t work, copy this URL into your browser:</p>
+        <code>${resetLink}</code>
+      </div>
+    `,
+  });
 }
 
-// ====== ROUTES ======
-app.get('/', (_req, res) => res.json({ ok: true, name: `${APP_NAME} API`, ts: Date.now() }));
-app.get('/api/debug', (_req, res) => res.json({ ok: true, message: 'API reachable' }));
+// ====== Routes ======
 
-// Register
+// Health & debug
+app.get('/', (req, res) => res.send('CaribPay API is live ✅'));
+app.get('/api/health', (req, res) =>
+  res.json({ ok: true, env: NODE_ENV, time: new Date().toISOString() })
+);
+
+// Auth: Register
 app.post('/api/auth/register', async (req, res) => {
   try {
-    let { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    email = String(email).toLowerCase().trim();
-    if (!validEmail(email)) return res.status(400).json({ error: 'Invalid email format' });
-    if (!strongEnough(password)) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    const { email, password, name = '' } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ message: 'Email and password are required' });
 
-    const exists = await User.findOne({ email });
-    if (exists) return res.status(409).json({ error: 'User already exists' });
+    const existing = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existing) return res.status(409).json({ message: 'User already exists' });
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({ email, passwordHash });
+    const hash = await bcrypt.hash(password, 10);
+    const user = await User.create({
+      email: email.toLowerCase().trim(),
+      password: hash,
+      name,
+    });
+
     const token = signToken(user);
-    res.status(201).json({ token, user: { email: user.email } });
-  } catch (e) {
-    console.error('Register error:', e);
-    res.status(500).json({ error: 'Server error' });
+    res.status(201).json({ token, email: user.email, name: user.name });
+  } catch (err) {
+    console.error('register error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Login
+// Auth: Login
 app.post('/api/auth/login', async (req, res) => {
   try {
-    let { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    email = String(email).toLowerCase().trim();
-
-    const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-
-    const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
-
+    const { email, password } = req.body;
+    const user =
+      email &&
+      (await User.findOne({ email: email.toLowerCase().trim() }));
+    if (!user || !(await bcrypt.compare(password || '', user.password))) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
     const token = signToken(user);
-    res.json({ token, user: { email: user.email } });
-  } catch (e) {
-    console.error('Login error:', e);
-    res.status(500).json({ error: 'Server error' });
+    res.json({ token, email: user.email, name: user.name || '' });
+  } catch (err) {
+    console.error('login error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get current user
-app.get('/api/auth/me', auth, async (req, res) => {
-  const user = await User.findById(req.user.uid).select('email createdAt');
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ user });
+// Auth: Me (token check)
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  const user = await User.findById(req.user.sub).select('email name createdAt');
+  if (!user) return res.status(404).json({ message: 'Not found' });
+  res.json({ email: user.email, name: user.name || '', createdAt: user.createdAt });
 });
 
-// Change password (logged-in)
-app.post('/api/auth/change-password', auth, async (req, res) => {
+// Auth: Forgot password (email link)
+app.post('/api/auth/forgot', async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body || {};
-    if (!currentPassword || !newPassword)
-      return res.status(400).json({ error: 'currentPassword and newPassword required' });
-    if (!strongEnough(newPassword)) return res.status(400).json({ error: 'New password too short' });
+    const { email } = req.body;
+    const user =
+      email &&
+      (await User.findOne({ email: email.toLowerCase().trim() }));
+    // Always respond 200 to avoid user enumeration
+    if (!user) return res.json({ ok: true });
 
-    const user = await User.findById(req.user.uid);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!ok) return res.status(401).json({ error: 'Current password incorrect' });
-
-    user.passwordHash = await bcrypt.hash(newPassword, 10);
-    await user.save();
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('Change password error:', e);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Request password reset (email link)
-app.post('/api/auth/request-reset', async (req, res) => {
-  try {
-    let { email } = req.body || {};
-    email = String(email || '').toLowerCase().trim();
-    if (!validEmail(email)) return res.status(200).json({ ok: true }); // do not leak users
-
-    const user = await User.findOne({ email });
-    if (!user) return res.status(200).json({ ok: true });
-
-    const token = crypto.randomBytes(24).toString('hex');
-    const hash = crypto.createHash('sha256').update(token).digest('hex');
-    user.resetTokenHash = hash;
-    user.resetTokenExp = new Date(Date.now() + 1000 * 60 * 15); // 15 min
-    await user.save();
-
-    const resetUrl = `${process.env.FRONTEND_RESET_URL || 'https://snack.expo.dev'}/?resetToken=${token}&email=${encodeURIComponent(email)}`;
-    await sendMail(
-      email,
-      `${APP_NAME} password reset`,
-      `<p>We received a request to reset your ${APP_NAME} password.</p>
-       <p><a href="${resetUrl}">Tap here to reset</a> (valid for 15 minutes).</p>
-       <p>If you didn't request this, you can ignore this email.</p>`
+    const resetToken = jwt.sign(
+      { sub: user._id.toString(), purpose: 'reset' },
+      JWT_SECRET,
+      { expiresIn: '30m' }
     );
 
+    await sendResetEmail(user.email, resetToken);
     res.json({ ok: true });
-  } catch (e) {
-    console.error('Request reset error:', e);
-    res.status(500).json({ error: 'Server error' });
+  } catch (err) {
+    console.error('forgot error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Complete password reset with token
-app.post('/api/auth/reset-password', async (req, res) => {
+// Auth: Reset password
+app.post('/api/auth/reset', async (req, res) => {
   try {
-    const { email, token, newPassword } = req.body || {};
-    if (!email || !token || !newPassword)
-      return res.status(400).json({ error: 'email, token and newPassword required' });
-    if (!strongEnough(newPassword)) return res.status(400).json({ error: 'New password too short' });
+    const { token, password } = req.body;
+    if (!token || !password)
+      return res.status(400).json({ message: 'token and password required' });
 
-    const user = await User.findOne({ email: String(email).toLowerCase().trim() });
-    if (!user || !user.resetTokenHash || !user.resetTokenExp) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET);
+    } catch {
+      return res.status(400).json({ message: 'Invalid or expired token' });
     }
-    if (Date.now() > new Date(user.resetTokenExp).getTime()) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
-    }
+    if (payload.purpose !== 'reset')
+      return res.status(400).json({ message: 'Invalid token purpose' });
 
-    const hash = crypto.createHash('sha256').update(token).digest('hex');
-    if (hash !== user.resetTokenHash) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
-    }
+    const user = await User.findById(payload.sub);
+    if (!user) return res.status(404).json({ message: 'User not found' });
 
-    user.passwordHash = await bcrypt.hash(newPassword, 10);
-    user.resetTokenHash = undefined;
-    user.resetTokenExp = undefined;
+    user.password = await bcrypt.hash(password, 10);
     await user.save();
 
     res.json({ ok: true });
-  } catch (e) {
-    console.error('Reset password error:', e);
-    res.status(500).json({ error: 'Server error' });
+  } catch (err) {
+    console.error('reset error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// 404
-app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
-
-// Errors
-app.use((err, _req, res, _next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Server error' });
+// ====== Start ======
+app.listen(PORT, () => {
+  console.log(`🚀 CaribPay backend running on port ${PORT}`);
+  console.log(`   Environment: ${NODE_ENV}`);
 });
-
-app.listen(PORT, () => console.log(`${APP_NAME} backend running on port ${PORT}`));
