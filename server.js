@@ -1,235 +1,143 @@
-// server.js — CaribPay backend (Express + MongoDB + JWT)
-const express = require("express");
-const cors = require("cors");
-const mongoose = require("mongoose");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-
-// ---- env (Render injects these) ----
-const {
-  MONGO_URI,
-  JWT_SECRET = "changeme",
-  NODE_ENV = "production",
-} = process.env;
+// server.js — CaribPay backend (MongoDB + JWT + Transfers + History)
+import express from "express";
+import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import cors from "cors";
 
 const app = express();
-
-// ---- CORS (allow Snack & dev) ----
-app.use(
-  cors({
-    origin: [
-      "https://snack.expo.dev",
-      "https://preview.snack.expo.dev",
-      "http://localhost:19006",
-      "http://localhost:5173",
-      "http://localhost:3000",
-      "*",
-    ],
-  })
-);
-
-// ---- JSON parsing ----
+app.use(cors());
 app.use(express.json());
 
-// ---- Mongo connect ----
-mongoose
-  .connect(MONGO_URI, { dbName: "caribpay" })
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => {
-    console.error("Mongo connect error:", err.message);
-    process.exit(1);
-  });
+const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
+const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://<your-mongodb-uri>";
 
-// ---- Models ----
-const userSchema = new mongoose.Schema(
-  {
-    email: { type: String, unique: true, required: true, index: true },
-    password: { type: String, required: true }, // hashed
-    createdAt: { type: Date, default: Date.now },
-  },
-  { versionKey: false }
-);
+/* ====== MODELS ====== */
+const userSchema = new mongoose.Schema({
+  email: { type: String, unique: true },
+  password: String,
+  balance: { type: Number, default: 100.0 },
+});
 
-// hash password on create / change
-userSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (e) {
-    next(e);
-  }
+const txSchema = new mongoose.Schema({
+  from: String,
+  to: String,
+  amount: Number,
+  type: String, // 'send' or 'receive'
+  createdAt: { type: Date, default: Date.now },
 });
 
 const User = mongoose.model("User", userSchema);
-
-const txSchema = new mongoose.Schema(
-  {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
-    type: { type: String, enum: ["send", "receive"], required: true },
-    amount: { type: Number, required: true },
-    to: String,
-    from: String,
-  },
-  { timestamps: true, versionKey: false }
-);
-
 const Transaction = mongoose.model("Transaction", txSchema);
 
-// ---- helpers ----
-function sign(user) {
-  return jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, {
-    expiresIn: "7d",
-  });
-}
-
+/* ====== HELPERS ====== */
 function auth(req, res, next) {
   const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-  if (!token) return res.status(401).json({ message: "Missing token" });
+  const token = header.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "No token" });
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.user = payload;
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
     next();
   } catch {
-    return res.status(401).json({ message: "Invalid token" });
+    res.status(401).json({ message: "Invalid token" });
   }
 }
 
-// ---- routes ----
+/* ====== ROUTES ====== */
 
-// health/info
-app.get("/", (req, res) => {
-  res.json({
-    name: "CaribPay backend",
-    status: "ok",
-    env: NODE_ENV,
-    routes: [
-      "POST /api/auth/register",
-      "POST /api/auth/login",
-      "GET  /api/me (auth)",
-      "GET  /api/transactions (auth)",
-    ],
-  });
-});
-
-// register
+// Register
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { email, password } = req.body || {};
+    const { email, password } = req.body;
     if (!email || !password)
-      return res.status(400).json({ message: "Email and password required" });
-
+      return res.status(400).json({ message: "Missing fields" });
     const exists = await User.findOne({ email });
-    if (exists) return res.status(409).json({ message: "User already exists" });
-
-    const user = await User.create({ email, password });
-
-    // Optional: seed a couple of example transactions for new users
-    await Transaction.insertMany([
-      {
-        userId: user._id,
-        type: "send",
-        amount: 25.5,
-        to: "Cafe",
-      },
-      {
-        userId: user._id,
-        type: "receive",
-        amount: 120.0,
-        from: "A. Roberts",
-      },
-      {
-        userId: user._id,
-        type: "send",
-        amount: 8.99,
-        to: "Transit Top-up",
-      },
-    ]);
-
-    return res.json({ token: sign(user) });
+    if (exists) return res.status(400).json({ message: "User already exists" });
+    const hash = await bcrypt.hash(password, 10);
+    const user = await User.create({ email, password: hash });
+    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET);
+    res.json({ token });
   } catch (e) {
-    console.error("register error:", e);
-    return res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error", error: e.message });
   }
 });
 
-// login
+// Login
 app.post("/api/auth/login", async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password)
-      return res.status(400).json({ message: "Email and password required" });
-
+    const { email, password } = req.body;
     const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
-
+    if (!user) return res.status(400).json({ message: "User not found" });
     const ok = await bcrypt.compare(password, user.password);
-    if (!ok) return res.status(401).json({ message: "Invalid credentials" });
-
-    return res.json({ token: sign(user) });
+    if (!ok) return res.status(400).json({ message: "Invalid credentials" });
+    const token = jwt.sign({ id: user._id, email: user.email }, JWT_SECRET);
+    res.json({ token });
   } catch (e) {
-    console.error("login error:", e);
-    return res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error", error: e.message });
   }
 });
 
-// current user + computed balance
+// Get profile
 app.get("/api/me", auth, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).lean();
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    // compute balance from transactions
-    const txs = await Transaction.find({ userId: user._id }).lean();
-    const balance = txs.reduce((acc, t) => {
-      if (t.type === "receive") return acc + t.amount;
-      if (t.type === "send") return acc - t.amount;
-      return acc;
-    }, 0);
-
-    res.json({
-      email: user.email,
-      createdAt: user.createdAt,
-      balance: Math.round(balance * 100) / 100,
-    });
-  } catch (e) {
-    console.error("me error:", e);
-    res.status(500).json({ message: "Server error" });
-  }
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ message: "Not found" });
+  res.json({ email: user.email, balance: user.balance });
 });
 
-// recent transactions for the user
-app.get("/api/transactions", auth, async (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit || "15", 10), 50);
-    const txs = await Transaction.find({ userId: req.user.id })
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean();
-
-    res.json(
-      txs.map((t) => ({
-        id: t._id,
-        type: t.type,
-        amount: t.amount,
-        to: t.to,
-        from: t.from,
-        createdAt: t.createdAt,
-      }))
-    );
-  } catch (e) {
-    console.error("transactions error:", e);
-    res.status(500).json({ message: "Server error" });
-  }
+// Get transaction history
+app.get("/api/history", auth, async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ message: "Not found" });
+  const txs = await Transaction.find({
+    $or: [{ from: user.email }, { to: user.email }],
+  }).sort({ createdAt: -1 });
+  res.json(txs);
 });
 
-// 404
-app.use((req, res) => res.status(404).json({ message: "Not found" }));
+// Transfer funds
+app.post("/api/transfer", auth, async (req, res) => {
+  const { to, amount } = req.body;
+  const sender = await User.findById(req.user.id);
+  const recipient = await User.findOne({ email: to });
+  if (!recipient)
+    return res.status(404).json({ message: "Recipient not found" });
+  if (sender.balance < amount)
+    return res.status(400).json({ message: "Insufficient funds" });
 
-// start
+  // update balances
+  sender.balance -= amount;
+  recipient.balance += amount;
+  await sender.save();
+  await recipient.save();
+
+  // record transactions
+  await Transaction.create({
+    from: sender.email,
+    to: recipient.email,
+    amount,
+    type: "send",
+  });
+  await Transaction.create({
+    from: sender.email,
+    to: recipient.email,
+    amount,
+    type: "receive",
+  });
+
+  res.json({ ok: true });
+});
+
+// Default
+app.get("/", (req, res) => res.json({ message: "CaribPay backend running" }));
+
+/* ====== CONNECT + START ====== */
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((e) => console.error("MongoDB error", e));
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () =>
-  console.log(`CaribPay backend running on port ${PORT}`)
+  console.log(`🚀 CaribPay backend running on port ${PORT}`)
 );
