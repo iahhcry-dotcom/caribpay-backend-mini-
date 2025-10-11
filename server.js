@@ -1,32 +1,29 @@
-// server.mjs — CaribPay backend (ESM)
+// server.mjs — CaribPay minimal backend (ESM / Render-ready)
 import express from "express";
-import mongoose from "mongoose";
 import cors from "cors";
+import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import morgan from "morgan";
 
-// ---- ENV ----
 const {
+  PORT = 10000,
   MONGO_URI,
-  JWT_SECRET = "dev_secret_change_me",
-  PORT = process.env.PORT || 10000,
+  JWT_SECRET = "change-me",
+  NODE_ENV = "production",
 } = process.env;
 
-const app = express();
-app.use(cors({ origin: "*" }));
-app.use(express.json());
-app.use(morgan("tiny"));
-
-// ---- DB ----
 if (!MONGO_URI) {
-  console.error("❌ Missing MONGO_URI");
+  console.error("❌ Missing MONGO_URI in environment");
   process.exit(1);
 }
-await mongoose.connect(MONGO_URI);
+if (!JWT_SECRET || JWT_SECRET === "change-me") {
+  console.warn("⚠️  Using default JWT secret. Set JWT_SECRET in Render env vars.");
+}
+
+// ----- Mongo -----
+await mongoose.connect(MONGO_URI, { dbName: "caribpay" });
 console.log("✅ MongoDB connected");
 
-// ---- MODELS ----
 const userSchema = new mongoose.Schema(
   {
     email: { type: String, unique: true, required: true, index: true },
@@ -35,97 +32,87 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
 const User = mongoose.model("User", userSchema);
 
-const txnSchema = new mongoose.Schema(
-  {
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
-    type: { type: String, enum: ["send", "receive"], required: true },
-    amount: { type: Number, required: true },
-    to: String,
-    from: String,
-  },
-  { timestamps: true }
-);
-const Txn = mongoose.model("Txn", txnSchema);
+// ----- App -----
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-// ---- AUTH HELPERS ----
-const signToken = (user) =>
-  jwt.sign({ uid: user._id, email: user.email }, JWT_SECRET, { expiresIn: "7d" });
+// Health
+app.get("/", (_req, res) => res.json({ ok: true, service: "caribpay-backend", env: NODE_ENV }));
 
-function auth(req, res, next) {
-  const h = req.headers.authorization || "";
-  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
-  if (!token) return res.status(401).json({ message: "Unauthorized" });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
-  } catch {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
-}
-
-// ---- ROUTES ----
-app.get("/", (_req, res) => res.json({ ok: true, version: "esm" }));
-
+// Auth: register
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { email, password } = req.body || {};
-    if (!email || !password)
-      return res.status(400).json({ message: "Email & password required" });
-
+    if (!email || !password) return res.status(400).json({ message: "Email and password required" });
     const exists = await User.findOne({ email: email.toLowerCase() });
     if (exists) return res.status(409).json({ message: "User already exists" });
-
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({ email: email.toLowerCase(), passwordHash });
-
-    // seed demo data
-    await Txn.insertMany([
-      { userId: user._id, type: "receive", amount: 120, from: "A. Roberts" },
-      { userId: user._id, type: "send", amount: 25.5, to: "Cafe" },
-      { userId: user._id, type: "send", amount: 8.99, to: "Transit Top-up" },
-    ]);
-
-    res.status(201).json({ message: "Registered" });
+    const user = await User.create({ email: email.toLowerCase(), passwordHash, balance: 100.0 });
+    const token = jwt.sign({ uid: user._id, email: user.email }, JWT_SECRET, { expiresIn: "30d" });
+    return res.json({ token, user: { email: user.email, balance: user.balance } });
   } catch (e) {
-    console.error("register:", e);
-    res.status(500).json({ message: "Server error" });
+    console.error("register error:", e);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
+// Auth: login
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
-    if (!email || !password)
-      return res.status(400).json({ message: "Email & password required" });
-
+    if (!email || !password) return res.status(400).json({ message: "Email and password required" });
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.status(404).json({ message: "User not found" });
-
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) return res.status(401).json({ message: "Invalid credentials" });
-
-    const token = signToken(user);
-    res.json({ token, email: user.email, balance: user.balance ?? 0 });
+    const token = jwt.sign({ uid: user._id, email: user.email }, JWT_SECRET, { expiresIn: "30d" });
+    return res.json({ token, user: { email: user.email, balance: user.balance } });
   } catch (e) {
-    console.error("login:", e);
-    res.status(500).json({ message: "Server error" });
+    console.error("login error:", e);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-app.get("/api/transactions", auth, async (req, res) => {
+// Middleware to require auth
+function requireAuth(req, res, next) {
+  const h = req.headers.authorization || "";
+  const [, token] = h.split(" ");
+  if (!token) return res.status(401).json({ message: "Missing token" });
   try {
-    const items = await Txn.find({ userId: req.user.uid })
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .lean();
-    res.json({ items });
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
   } catch (e) {
-    console.error("txns:", e);
-    res.status(500).json({ message: "Server error" });
+    return res.status(401).json({ message: "Invalid token" });
   }
+}
+
+// Me
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+  const user = await User.findById(req.user.uid).lean();
+  if (!user) return res.status(404).json({ message: "User not found" });
+  return res.json({ email: user.email, balance: user.balance });
 });
 
-// ---- START ----
-app.listen(PORT, () => console.log(`🚀 CaribPay backend running on port ${PORT}`));
+// Demo transactions list (static)
+app.get("/api/tx/list", requireAuth, (_req, res) => {
+  const now = new Date();
+  const iso = (d) => new Date(d).toISOString();
+  res.json({
+    items: [
+      { id: "t1", type: "receive", amount: 120.0, from: "A. Roberts", at: iso(now) },
+      { id: "t2", type: "send", amount: 8.99, to: "Transit Top-up", at: iso(now) },
+      { id: "t3", type: "send", amount: 25.5, to: "Cafe", at: iso(now) },
+    ],
+  });
+});
+
+// 404
+app.use((_req, res) => res.status(404).json({ message: "Not found" }));
+
+app.listen(PORT, () => {
+  console.log(`🚀 CaribPay backend running on port ${PORT}`);
+});
