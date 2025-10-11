@@ -1,18 +1,7 @@
 {
-  "name": "caribpay-backend-mini",
+  "name": "caribpay-snack-minimal",
   "version": "1.0.0",
-  "description": "CaribPay backend API",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express": "^4.18.2",
-    "jsonwebtoken": "^9.0.2",
-    "mongoose": "^7.6.1",
-    "morgan": "^1.10.0"
-  }
+  "main": "App.js",
+  "private": true,
+  "dependencies": {}
 }
