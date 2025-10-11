@@ -1,9 +1,11 @@
 {
-  "name": "caribpay-backend-esm",
+  "name": "caribpay-snack-minimal",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "main": "server.mjs",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.mjs"
   },
@@ -12,7 +14,6 @@
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^7.6.1",
-    "morgan": "^1.10.0"
+    "mongoose": "^8.6.3"
   }
 }
