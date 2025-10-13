@@ -1,14 +1,21 @@
 {
   "name": "caribpay-backend-mini",
   "version": "1.0.0",
+  "private": true,
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "nodemailer": "^6.9.13"
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "mongoose": "^7.6.3",
+    "nodemailer": "^6.9.13",
+    "dotenv": "^16.4.5"
   }
 }
