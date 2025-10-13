@@ -1,23 +1,17 @@
 {
-  "name": "caribpay-backend-minimal",
+  "name": "caribpay-backend-mini",
   "version": "1.0.0",
-  "description": "CaribPay mini backend (Auth + Wallet)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": ">=18"
-  },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2",
     "mongoose": "^7.6.1",
-    "morgan": "^1.10.0",
-    "nodemailer": "^6.9.12"
+    "cors": "^2.8.5",
+    "bcrypt": "^5.1.1",
+    "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^6.9.13"
   }
 }
