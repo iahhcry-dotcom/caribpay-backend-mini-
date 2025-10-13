@@ -1,14 +1,14 @@
 /**
- * CaribPay Backend — ESM Version
- * Built for Node.js + Render + MongoDB Atlas
+ * CaribPay Backend (CommonJS build)
+ * Works with Render default Node setup
  */
 
-import express from "express";
-import cors from "cors";
-import mongoose from "mongoose";
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
+const express = require("express");
+const cors = require("cors");
+const mongoose = require("mongoose");
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 
 // ========= CONFIG =========
 const app = express();
@@ -23,7 +23,6 @@ const SMTP_USER = process.env.SMTP_USER || "";
 const SMTP_PASS = process.env.SMTP_PASS || "";
 const MAIL_FROM = process.env.MAIL_FROM || "CaribPay <no-reply@caribpay.com>";
 
-// ========= MIDDLEWARE =========
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
@@ -74,12 +73,10 @@ const mailer = nodemailer.createTransport({
 
 // ========= ROUTES =========
 
-// 🌍 Root
 app.get("/", (req, res) => {
   res.json({ message: "Welcome to CaribPay API" });
 });
 
-// 👤 Register
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -100,7 +97,6 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-// 🔑 Login
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -127,14 +123,12 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
-// 👁️ Authenticated Profile
 app.get("/api/auth/me", auth, async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: "User not found" });
   res.json({ user: { id: user._id, email: user.email, balance: user.balance || 0 } });
 });
 
-// 🔄 Forgot Password
 app.post("/api/auth/forgot", async (req, res) => {
   try {
     const { email } = req.body;
@@ -168,7 +162,6 @@ app.post("/api/auth/forgot", async (req, res) => {
   }
 });
 
-// 🔐 Reset Password
 app.post("/api/auth/reset", async (req, res) => {
   try {
     const { token, password } = req.body;
@@ -189,7 +182,6 @@ app.post("/api/auth/reset", async (req, res) => {
   }
 });
 
-// 💳 Transactions (demo)
 app.get("/api/tx/list", auth, async (req, res) => {
   res.json({ items: [] });
 });
@@ -201,6 +193,4 @@ app.post("/api/tx/send", auth, async (req, res) => {
   res.json({ message: "Transfer successful (demo)", to, amount });
 });
 
-// ========= START SERVER =========
-app.listen(PORT, () => {
-  console.log
+app.listen(PORT, () => console.log(`🚀 CaribPay backend running on port ${PORT}`));
